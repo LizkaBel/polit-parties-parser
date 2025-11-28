@@ -1,0 +1,224 @@
+import json
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from google.colab import files
+import os
+
+def locate_html_file():
+    """Поиск HTML файла в рабочей директории"""
+    html_files = [f for f in os.listdir('.') if f.endswith('.html')]
+    if html_files:
+        print(f"Обнаружен файл: {html_files[0]}")
+        return html_files[0]
+    return None
+
+def extract_party_data():
+    """Извлечение данных о политических партиях из HTML"""
+    
+    # Поиск HTML файла
+    html_file = locate_html_file()
+    
+    if not html_file:
+        print("HTML файл отсутствует в директории!")
+        print("Пожалуйста, загрузите HTML файл:")
+        uploaded_files = files.upload()
+        for filename in uploaded_files:
+            if filename.endswith('.html'):
+                html_file = filename
+                break
+    
+    if not html_file:
+        print("HTML файл не обнаружен")
+        return []
+    
+    try:
+        # Загрузка содержимого HTML файла
+        with open(html_file, 'r', encoding='utf-8') as file:
+            html_data = file.read()
+        print(f"Файл '{html_file}' загружен успешно")
+    except Exception as error:
+        print(f"Ошибка при загрузке файла: {error}")
+        return []
+    
+    soup = BeautifulSoup(html_data, 'html.parser')
+    party_list = []
+    
+    
+    # МЕТОД 1: Поиск в табличных структурах
+    table_elements = soup.find_all('table')
+    
+    for table in table_elements:
+        data_rows = table.find_all('tr')[1:]  # Игнорируем строку заголовков
+        for row in data_rows:
+            columns = row.find_all('td')
+            if len(columns) >= 2:
+                party_title = columns[0].get_text(strip=True)
+                if party_title and len(party_title) > 8:
+                    # Поиск ссылки на документы
+                    document_link = None
+                    for column in columns:
+                        anchor_tags = column.find_all('a', href=True)
+                        for anchor in anchor_tags:
+                            href_value = anchor.get('href')
+                            if href_value and ('.pdf' in href_value.lower() or '/documents/' in href_value):
+                                document_link = process_url(href_value)
+                                break
+                        if document_link:
+                            break
+                    
+                    party_list.append({
+                        'title': process_party_title(party_title),
+                        'document_link': document_link
+                    })
+    
+    # МЕТОД 2: Поиск через ссылки документов
+    if not party_list:
+        document_anchors = soup.find_all('a', href=lambda x: x and '/documents/' in x)
+        print(f"Найдено ссылок на документы: {len(document_anchors)}")
+        
+        for anchor in document_anchors:
+            party_title = anchor.get_text(strip=True)
+            if party_title and len(party_title) > 8:
+                document_link = process_url(anchor.get('href'))
+                party_list.append({
+                    'title': process_party_title(party_title),
+                    'document_link': document_link
+                })
+    
+    # МЕТОД 3: Анализ структурированных списков
+    if not party_list:
+        list_elements = soup.find_all(['ul', 'ol'])
+        for list_item in list_elements:
+            list_entries = list_item.find_all('li')
+            for entry in list_entries:
+                party_title = entry.get_text(strip=True)
+                if party_title and len(party_title) > 8 and validate_party_name(party_title):
+                    document_link = find_document_link(entry)
+                    party_list.append({
+                        'title': process_party_title(party_title),
+                        'document_link': document_link
+                    })
+    
+    # МЕТОД 4: Поиск по элементам с определенными классами
+    if not party_list:
+        div_elements = soup.find_all('div', class_=True)
+        for div in div_elements:
+            class_names = ' '.join(div.get('class', []))
+            if any(term in class_names.lower() for term in ['organization', 'entry', 'file']):
+                party_title = div.get_text(strip=True)
+                if party_title and len(party_title) > 8 and validate_party_name(party_title):
+                    document_link = find_document_link(div)
+                    party_list.append({
+                        'title': process_party_title(party_title),
+                        'document_link': document_link
+                    })
+    
+    # Удаление повторяющихся записей
+    distinct_parties = []
+    processed_titles = set()
+    
+    for party in party_list:
+        if party['title'] not in processed_titles:
+            processed_titles.add(party['title'])
+            distinct_parties.append(party)
+    
+    # Сортировка в алфавитном порядке
+    distinct_parties.sort(key=lambda x: x['title'])
+    
+    return distinct_parties
+
+def process_party_title(title):
+    """Обработка и очистка названия партии"""
+    if not title:
+        return title
+    
+    # Удаление служебных префиксов
+    prefix_list = [
+        'Политическая организация',
+        'Зарегистрированная партия',
+        'Официальное название',
+        'Наименование:',
+        'Свидетельство о регистрации'
+    ]
+    
+    for prefix in prefix_list:
+        if title.startswith(prefix):
+            title = title.replace(prefix, '').strip()
+    
+    # Удаление лишних символов и пробелов
+    title = title.replace('"', '').replace('  ', ' ').strip()
+    
+    return title
+
+def find_document_link(element):
+    """Поиск ссылки на документ в элементе"""
+    if not element:
+        return None
+    
+    # Поиск PDF документов
+    pdf_anchors = element.find_all('a', href=lambda x: x and '.pdf' in x.lower())
+    if pdf_anchors:
+        return process_url(pdf_anchors[0].get('href'))
+    
+    # Поиск любых ссылок на документы
+    all_anchors = element.find_all('a', href=True)
+    for anchor in all_anchors:
+        href_value = anchor.get('href')
+        if href_value and ('/documents/' in href_value or 'file' in href_value.lower()):
+            return process_url(href_value)
+    
+    return None
+
+def process_url(url):
+    """Обработка и нормализация URL"""
+    if not url:
+        return None
+    
+    # Создание абсолютного URL
+    if url.startswith('/'):
+        url = urljoin('https://minjust.gov.ru', url)
+    
+    # Корректировка протокола
+    if url.startswith('http://'):
+        url = url.replace('http://', 'https://')
+    
+    return url
+
+def validate_party_name(text):
+    """Проверка корректности названия партии"""
+    if not text or len(text) < 8 or len(text) > 200:
+        return False
+    
+    key_terms = ['партия', 'россия', 'демократич', 'союз', 'движение', 'организация']
+    return any(term in text.lower() for term in key_terms)
+
+def execute_parsing():
+    # Извлечение данных
+    parties_data = extract_party_data()
+    
+    if parties_data:
+        # Сохранение в JSON формате
+        with open('political_parties.json', 'w', encoding='utf-8') as f:
+            json.dump(parties_data, f, ensure_ascii=False, indent=2)
+        
+        print(f"Обнаружено политических партий: {len(parties_data)}")
+        print("Данные сохранены в файл political_parties.json")
+        
+        # Отображение результатов
+        print("ПЕРЕЧЕНЬ ПОЛИТИЧЕСКИХ ПАРТИЙ:")
+        for index, party in enumerate(parties_data, 1):
+            doc_info = party['document_link'] if party['document_link'] else "Документ отсутствует"
+            print(f"{index:2d}. {party['title']}")
+            if party['document_link']:
+                print(f"     📎 {party['document_link']}")
+            print()
+        
+        # Загрузка результата
+        print("Загружаю файл с результатами...")
+        files.download('political_parties.json')
+        
+    else:
+        print("Данные о партиях не обнаружены")
+
+if __name__ == "__main__":
+    execute_parsing()
