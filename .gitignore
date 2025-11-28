@@ -1,0 +1,25 @@
+Python
+pycache/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+Virtual environment
+venv/
+env/
+.venv/
+
+IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+OS
+.DS_Store
+Thumbs.db
+
+Project files
+*.html
+parties.json
